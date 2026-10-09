@@ -1,177 +1,178 @@
+require('dotenv').config();
 const {
   Client,
   GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
   ActivityType,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  SlashCommandBuilder,
-  PermissionFlagsBits,
-  REST,
-  Routes
+  EmbedBuilder
 } = require('discord.js');
-require('dotenv').config();
-
-const db = require('./database');
+const db = require('./database.js');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages
   ]
 });
 
-// Helper: Render Preview/Live Embed
-function renderTemplateEmbed(template, botUser) {
-  const embed = new EmbedBuilder()
-    .setTitle(template.title || 'Untitled Embed')
-    .setDescription(template.description || 'No description provided.')
-    .setColor(template.color || 0x5865F2)
-    .setFooter({
-      text: `Managed by ${botUser.username}`,
-      iconURL: botUser.displayAvatarURL()
-    });
+// UI Helper: Interactive Builder Control Panel
+function createBuilderPanel(templateName) {
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`builder_edit_text:${templateName}`)
+      .setLabel('Edit Content')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`builder_edit_media:${templateName}`)
+      .setLabel('Edit Media')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`builder_publish:${templateName}`)
+      .setLabel('Publish Live')
+      .setStyle(ButtonStyle.Success)
+  );
+  return row1;
+}
 
-  if (template.image) embed.setImage(template.image);
+// UI Helper: Render visual embed preview from stored template data
+function renderTemplateEmbed(template, clientUser) {
+  const embed = new EmbedBuilder()
+    .setTitle(template.title || 'Untitled Notification')
+    .setDescription(template.description || 'No description configured.')
+    .setColor(template.color || '#5865F2');
+
   if (template.thumbnail) embed.setThumbnail(template.thumbnail);
+  if (template.image) embed.setImage(template.image);
+
+  embed.setFooter({
+    text: 'Managed by ModuRole',
+    iconURL: clientUser.displayAvatarURL()
+  });
 
   return embed;
 }
 
-// Helper: Build Components for Interactive Embed
-function buildAttachedComponents(template) {
+// UI Helper: Generate interactive ActionRows (Buttons & Select Menus) for published messages
+function renderTemplateComponents(template, templateName, guild) {
   const rows = [];
+  const buttonList = [];
 
-  // 1. Zira-Style Toggle Role Button
+  // 1. Single Toggle Role Button (Zira Style)
   if (template.toggleRoleId) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`action_toggle_role:${template.toggleRoleId}`)
-          .setLabel('Get / Remove Role')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('🏷️')
-      )
+    const role = guild.roles.cache.get(template.toggleRoleId);
+    const labelText = role ? `Toggle ${role.name}` : 'Toggle Role';
+    buttonList.push(
+      new ButtonBuilder()
+        .setCustomId(`action_toggle_role:${templateName}`)
+        .setLabel(labelText)
+        .setStyle(ButtonStyle.Primary)
     );
   }
 
   // 2. Random Role Gacha Button
   if (template.randomPool && template.randomPool.length > 0) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`action_random_role:${template.name}`)
-          .setLabel('Lucky Role Draw')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('🎲')
-      )
+    buttonList.push(
+      new ButtonBuilder()
+        .setCustomId(`action_random_role:${templateName}`)
+        .setLabel('🎲 Roll Random Role')
+        .setStyle(ButtonStyle.Success)
     );
   }
 
-  // 3. Multi-Role Long Tab Dropdown Menu
-  if (template.multiSelectRoles && template.multiSelectRoles.length > 0) {
-    const options = template.multiSelectRoles.slice(0, 25).map(r => ({
-      label: r.name,
-      value: r.id,
-      description: `Toggle ${r.name} role`
-    }));
+  if (buttonList.length > 0) {
+    rows.push(new ActionRowBuilder().addComponents(buttonList));
+  }
 
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(`action_multi_select:${template.name}`)
-          .setPlaceholder('🔽 Select your roles (Multiple choices allowed)...')
-          .setMinValues(1)
-          .setMaxValues(options.length)
-          .addOptions(options)
-      )
-    );
+  // 3. Multi-Role Long Tab Dropdown Menu (References by Role ID)
+  if (template.multiRoles && template.multiRoles.length > 0) {
+    const validOptions = [];
+
+    for (const rId of template.multiRoles) {
+      const role = guild.roles.cache.get(rId);
+      if (role) {
+        validOptions.push({
+          label: role.name,
+          value: role.id,
+          description: `ID: ${role.id}`
+        });
+      }
+    }
+
+    if (validOptions.length > 0) {
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId(`action_multi_select:${templateName}`)
+        .setPlaceholder('Choose your roles...')
+        .setMinValues(0)
+        .setMaxValues(validOptions.length)
+        .addOptions(validOptions.slice(0, 25));
+
+      rows.push(new ActionRowBuilder().addComponents(selectMenu));
+    }
   }
 
   return rows;
 }
 
-// Helper: Interactive Builder Control Panel (Mimu-Style)
-function createBuilderPanel(templateName) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`panel_edit_content:${templateName}`)
-      .setLabel('Edit Content')
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji('📝'),
-    new ButtonBuilder()
-      .setCustomId(`panel_edit_images:${templateName}`)
-      .setLabel('Set Media')
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji('🖼️'),
-    new ButtonBuilder()
-      .setCustomId(`panel_post_channel:${templateName}`)
-      .setLabel('Publish Live')
-      .setStyle(ButtonStyle.Success)
-      .setEmoji('🚀')
-  );
-}
-
-// Slash Commands Definition
+// Slash Command Registry Definition
 const commands = [
   new SlashCommandBuilder()
     .setName('help')
-    .setDescription('Display documentation and guidelines for ModuRole'),
+    .setDescription('Show all ModuRole bot commands and setup documentation'),
 
   new SlashCommandBuilder()
     .setName('embed')
-    .setDescription('Embed and role configuration engine')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    // /embed create
+    .setDescription('Embed system and role management interface')
     .addSubcommand(sub =>
       sub
         .setName('create')
-        .setDescription('Create and launch an interactive embed builder session')
+        .setDescription('Create a new embed template')
         .addStringOption(opt =>
           opt.setName('name')
-            .setDescription('Unique template identifier name')
+            .setDescription('Unique template name')
             .setRequired(true)
         )
     )
-    // /embed edit
     .addSubcommand(sub =>
       sub
         .setName('edit')
-        .setDescription('Edit an existing embed template or live message')
+        .setDescription('Open builder editor or sync an active published message')
         .addStringOption(opt =>
           opt.setName('name')
-            .setDescription('Name of the template to edit')
+            .setDescription('Template name')
             .setRequired(true)
             .setAutocomplete(true)
         )
         .addStringOption(opt =>
           opt.setName('message_id')
-            .setDescription('Target live message ID (Optional)')
+            .setDescription('Target live message ID to update components or content')
             .setRequired(false)
         )
     )
-    // /embed delete
     .addSubcommand(sub =>
       sub
         .setName('delete')
-        .setDescription('Delete an existing embed template')
+        .setDescription('Permanently remove a template')
         .addStringOption(opt =>
           opt.setName('name')
-            .setDescription('Name of the template to delete')
+            .setDescription('Template name')
             .setRequired(true)
             .setAutocomplete(true)
         )
     )
-    // Configuration Attachments
     .addSubcommand(sub =>
       sub
         .setName('attach_role_toggle')
-        .setDescription('Attach a Zira-style single toggle role button to a template')
+        .setDescription('Attach a 1-click toggle button to a template')
         .addStringOption(opt =>
           opt.setName('name')
             .setDescription('Template name')
@@ -183,46 +184,57 @@ const commands = [
             .setDescription('Role to toggle')
             .setRequired(true)
         )
+    ),
+
+  // attach_random_role: รองรับสูงสุด 10 ยศต่อคำสั่ง
+  new SlashCommandBuilder()
+    .setName('attach_random_role')
+    .setDescription('Add up to 10 roles into the random pool gacha for a template')
+    .addStringOption(opt =>
+      opt.setName('name')
+        .setDescription('Template name')
+        .setRequired(true)
+        .setAutocomplete(true)
     )
-    .addSubcommand(sub =>
-      sub
-        .setName('attach_random_role')
-        .setDescription('Add a role into the random pool gacha for a template')
-        .addStringOption(opt =>
-          opt.setName('name')
-            .setDescription('Template name')
-            .setRequired(true)
-            .setAutocomplete(true)
-        )
-        .addRoleOption(opt =>
-          opt.setName('role')
-            .setDescription('Role to add into pool')
-            .setRequired(true)
-        )
+    .addRoleOption(opt => opt.setName('role1').setDescription('Role 1 (Required)').setRequired(true))
+    .addRoleOption(opt => opt.setName('role2').setDescription('Role 2').setRequired(false))
+    .addRoleOption(opt => opt.setName('role3').setDescription('Role 3').setRequired(false))
+    .addRoleOption(opt => opt.setName('role4').setDescription('Role 4').setRequired(false))
+    .addRoleOption(opt => opt.setName('role5').setDescription('Role 5').setRequired(false))
+    .addRoleOption(opt => opt.setName('role6').setDescription('Role 6').setRequired(false))
+    .addRoleOption(opt => opt.setName('role7').setDescription('Role 7').setRequired(false))
+    .addRoleOption(opt => opt.setName('role8').setDescription('Role 8').setRequired(false))
+    .addRoleOption(opt => opt.setName('role9').setDescription('Role 9').setRequired(false))
+    .addRoleOption(opt => opt.setName('role10').setDescription('Role 10').setRequired(false)),
+
+  // attach_multi_role: รองรับสูงสุด 10 ยศต่อคำสั่ง
+  new SlashCommandBuilder()
+    .setName('attach_multi_role')
+    .setDescription('Add up to 10 roles to the multi-select dropdown menu')
+    .addStringOption(opt =>
+      opt.setName('name')
+        .setDescription('Template name')
+        .setRequired(true)
+        .setAutocomplete(true)
     )
-    .addSubcommand(sub =>
-      sub
-        .setName('attach_multi_role')
-        .setDescription('Add a role into the multi-select dropdown tab for a template')
-        .addStringOption(opt =>
-          opt.setName('name')
-            .setDescription('Template name')
-            .setRequired(true)
-            .setAutocomplete(true)
-        )
-        .addRoleOption(opt =>
-          opt.setName('role')
-            .setDescription('Role to add to the menu')
-            .setRequired(true)
-        )
-    )
+    .addRoleOption(opt => opt.setName('role1').setDescription('Role 1 (Required)').setRequired(true))
+    .addRoleOption(opt => opt.setName('role2').setDescription('Role 2').setRequired(false))
+    .addRoleOption(opt => opt.setName('role3').setDescription('Role 3').setRequired(false))
+    .addRoleOption(opt => opt.setName('role4').setDescription('Role 4').setRequired(false))
+    .addRoleOption(opt => opt.setName('role5').setDescription('Role 5').setRequired(false))
+    .addRoleOption(opt => opt.setName('role6').setDescription('Role 6').setRequired(false))
+    .addRoleOption(opt => opt.setName('role7').setDescription('Role 7').setRequired(false))
+    .addRoleOption(opt => opt.setName('role8').setDescription('Role 8').setRequired(false))
+    .addRoleOption(opt => opt.setName('role9').setDescription('Role 9').setRequired(false))
+    .addRoleOption(opt => opt.setName('role10').setDescription('Role 10').setRequired(false))
 ].map(c => c.toJSON());
 
 // Lifecycle Initialization
 client.once('ready', async () => {
   console.log(`[ModuRole] Global Service Online: ${client.user.tag}`);
 
-     const activities = [
+  // Dynamic Presence Rotation
+  const activities = [
     { name: '/help | ModuRole Engine', type: ActivityType.Playing },
     { name: 'Role Requests', type: ActivityType.Listening },
     { name: 'Community Hub', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' },
@@ -244,8 +256,7 @@ client.once('ready', async () => {
 
     activityIndex = (activityIndex + 1) % activities.length;
   }, 15000);
-    
-    
+
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
   try {
     console.log('[ModuRole] Synchronizing global slash commands...');
@@ -263,77 +274,69 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isAutocomplete()) return;
 
-  if (interaction.commandName === 'embed') {
+  if (interaction.commandName === 'embed' ||
+      interaction.commandName === 'attach_random_role' ||
+      interaction.commandName === 'attach_multi_role') {
     const focusedValue = interaction.options.getFocused().toLowerCase();
-    const templates = db.getTemplates(interaction.guildId);
-    const names = Object.keys(templates);
-
-    const filtered = names
-      .filter(name => name.toLowerCase().includes(focusedValue))
-      .slice(0, 25);
+    const templates = db.listTemplates(interaction.guildId);
+    const filtered = templates.filter(name => name.toLowerCase().includes(focusedValue));
 
     await interaction.respond(
-      filtered.map(name => ({ name: name, value: name }))
+      filtered.slice(0, 25).map(choice => ({ name: choice, value: choice }))
     );
   }
 });
 
-// Interaction Dispatcher
+// Primary Interaction Engine
 client.on('interactionCreate', async interaction => {
-  // 1. Slash Commands
+  // 1. Slash Commands Processing
   if (interaction.isChatInputCommand()) {
-    const { commandName, options, guildId } = interaction;
+    const { commandName } = interaction;
 
     if (commandName === 'help') {
       const helpEmbed = new EmbedBuilder()
-        .setTitle('ModuRole Core | Commands & Usage')
-        .setColor(0x5865F2)
-        .setDescription('Modular Discord embed and dynamic role assignment documentation.')
+        .setTitle('ModuRole — Operational Guide')
+        .setColor('#5865F2')
+        .setDescription('A modular system for building visual embeds, buttons, gacha role pulls, and multi-select menus.')
         .addFields(
-          { name: '/embed create <name>', value: 'Open a visual Mimu-style builder session to craft and publish an embed.' },
-          { name: '/embed edit <name> [message_id]', value: 'Edit an existing template or update a deployed live message.' },
-          { name: '/embed delete <name>', value: 'Remove a template permanently from this server.' },
-          { name: '/embed attach_role_toggle', value: 'Add a 1-click toggle button (Zira style).' },
-          { name: '/embed attach_random_role', value: 'Add roles to the gacha pool for lucky roll.' },
-          { name: '/embed attach_multi_role', value: 'Add selectable roles to the multi-choice long tab menu.' }
-        )
-        .setFooter({ text: `Managed by ${client.user.username}`, iconURL: client.user.displayAvatarURL() });
-
+          { name: '/help', value: 'Displays this command guide.' },
+          { name: '/embed create <name>', value: 'Initiate visual builder session.' },
+          { name: '/embed edit <name> [message_id]', value: 'Edit template or sync an already published embed.' },
+          { name: '/embed delete <name>', value: 'Remove a template permanently.' },
+          { name: '/embed attach_role_toggle <name> <role>', value: 'Attach a 1-click toggle button.' },
+          { name: '/attach_random_role <name> [role1..10]', value: 'Add up to 10 roles to gacha pool.' },
+          { name: '/attach_multi_role <name> [role1..10]', value: 'Add up to 10 roles to dropdown selection.' }
+        );
       return interaction.reply({ embeds: [helpEmbed], ephemeral: true });
     }
 
     if (commandName === 'embed') {
-      const sub = options.getSubcommand();
-      const templateName = options.getString('name');
+      const sub = interaction.options.getSubcommand();
 
       if (sub === 'create') {
-        const existing = db.getTemplate(guildId, templateName);
+        const name = interaction.options.getString('name');
+        const existing = db.getTemplate(interaction.guildId, name);
         if (existing) {
-          return interaction.reply({
-            content: `Template \`${templateName}\` already exists. Use \`/embed edit\` instead.`,
-            ephemeral: true
-          });
+          return interaction.reply({ content: `A template named \`${name}\` already exists.`, ephemeral: true });
         }
 
         const newTemplate = {
-          name: templateName,
-          title: `New Embed: ${templateName}`,
-          description: 'Click **Edit Content** below to adjust text, or **Set Media** for images.',
+          title: 'Title: Welcome to Our Server',
+          description: 'Click buttons below to receive your respective community roles.',
+          color: '#5865F2',
           image: null,
           thumbnail: null,
-          color: 0x5865F2,
           toggleRoleId: null,
           randomPool: [],
-          multiSelectRoles: []
+          multiRoles: []
         };
 
-        db.saveTemplate(guildId, templateName, newTemplate);
-
+        db.saveTemplate(interaction.guildId, name, newTemplate);
         const previewEmbed = renderTemplateEmbed(newTemplate, client.user);
-        const panelRow = createBuilderPanel(templateName);
+        const panelRow = createBuilderPanel(name);
 
         return interaction.reply({
-          content: `🛠️ **Builder Session Started for:** \`${templateName}\``,
+          content: `Builder initialized for template: \`${name}\``,
           embeds: [previewEmbed],
           components: [panelRow],
           ephemeral: true
@@ -341,35 +344,39 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (sub === 'edit') {
-        const template = db.getTemplate(guildId, templateName);
+        const name = interaction.options.getString('name');
+        const messageId = interaction.options.getString('message_id');
+        const template = db.getTemplate(interaction.guildId, name);
+
         if (!template) {
-          return interaction.reply({ content: `Template \`${templateName}\` not found.`, ephemeral: true });
+          return interaction.reply({ content: `Template \`${name}\` not found.`, ephemeral: true });
         }
 
-        const messageId = options.getString('message_id');
+        // หากมีการระบุ message_id ให้ซิงก์ข้อความจริงที่โพสต์ไปแล้ว
         if (messageId) {
           try {
-            const liveMsg = await interaction.channel.messages.fetch(messageId);
-            const liveEmbed = renderTemplateEmbed(template, client.user);
-            const liveComponents = buildAttachedComponents(template);
+            const targetMsg = await interaction.channel.messages.fetch(messageId);
+            if (!targetMsg) return interaction.reply({ content: 'Target message not found in this channel.', ephemeral: true });
 
-            await liveMsg.edit({ embeds: [liveEmbed], components: liveComponents });
-            db.linkActiveEmbed(guildId, messageId, templateName);
+            const updatedEmbed = renderTemplateEmbed(template, client.user);
+            const updatedComponents = renderTemplateComponents(template, name, interaction.guild);
 
-            return interaction.reply({
-              content: `Live message \`${messageId}\` updated successfully from template \`${templateName}\`.`,
-              ephemeral: true
+            await targetMsg.edit({
+              embeds: [updatedEmbed],
+              components: updatedComponents
             });
+
+            return interaction.reply({ content: `Successfully synced live message (\`${messageId}\`) with template \`${name}\`.`, ephemeral: true });
           } catch (err) {
-            return interaction.reply({ content: `Failed to fetch or edit message \`${messageId}\`. Check permissions.`, ephemeral: true });
+            return interaction.reply({ content: `Could not edit message: ${err.message}`, ephemeral: true });
           }
         }
 
         const previewEmbed = renderTemplateEmbed(template, client.user);
-        const panelRow = createBuilderPanel(templateName);
+        const panelRow = createBuilderPanel(name);
 
         return interaction.reply({
-          content: `🛠️ **Editor Session for:** \`${templateName}\``,
+          content: `Editing template: \`${name}\``,
           embeds: [previewEmbed],
           components: [panelRow],
           ephemeral: true
@@ -377,181 +384,216 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (sub === 'delete') {
-        const deleted = db.removeTemplate(guildId, templateName);
-        if (deleted) {
-          return interaction.reply({ content: `Template \`${templateName}\` has been deleted successfully.`, ephemeral: true });
-        } else {
-          return interaction.reply({ content: `Template \`${templateName}\` was not found.`, ephemeral: true });
+        const name = interaction.options.getString('name');
+        const success = db.deleteTemplate(interaction.guildId, name);
+        if (!success) {
+          return interaction.reply({ content: `Template \`${name}\` not found.`, ephemeral: true });
         }
+        return interaction.reply({ content: `Template \`${name}\` successfully deleted.`, ephemeral: true });
       }
 
       if (sub === 'attach_role_toggle') {
-        const template = db.getTemplate(guildId, templateName);
-        if (!template) return interaction.reply({ content: `Template \`${templateName}\` not found.`, ephemeral: true });
+        const name = interaction.options.getString('name');
+        const role = interaction.options.getRole('role');
+        const template = db.getTemplate(interaction.guildId, name);
 
-        const role = options.getRole('role');
+        if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
+
         template.toggleRoleId = role.id;
-        db.saveTemplate(guildId, templateName, template);
+        db.saveTemplate(interaction.guildId, name, template);
 
-        return interaction.reply({ content: `Attached toggle button for role **${role.name}** to template \`${templateName}\`.`, ephemeral: true });
+        return interaction.reply({
+          content: `Attached toggle button for role **${role.name}** to template \`${name}\`.`,
+          ephemeral: true
+        });
       }
+    }
 
-      if (sub === 'attach_random_role') {
-        const template = db.getTemplate(guildId, templateName);
-        if (!template) return interaction.reply({ content: `Template \`${templateName}\` not found.`, ephemeral: true });
+    // จัดการ attach_random_role รองรับสูงสุด 10 ยศ บันทึกเป็น Role ID
+    if (commandName === 'attach_random_role') {
+      const name = interaction.options.getString('name');
+      const template = db.getTemplate(interaction.guildId, name);
+      if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
 
-        const role = options.getRole('role');
-        if (!template.randomPool) template.randomPool = [];
-        if (!template.randomPool.includes(role.id)) {
-          template.randomPool.push(role.id);
-          db.saveTemplate(guildId, templateName, template);
+      if (!template.randomPool) template.randomPool = [];
+
+      const addedRoles = [];
+      for (let i = 1; i <= 10; i++) {
+        const role = interaction.options.getRole(`role${i}`);
+        if (role) {
+          if (!template.randomPool.includes(role.id)) {
+            template.randomPool.push(role.id);
+            addedRoles.push(role.name);
+          }
         }
-
-        return interaction.reply({ content: `Added role **${role.name}** into lucky draw pool for \`${templateName}\`.`, ephemeral: true });
       }
 
-      if (sub === 'attach_multi_role') {
-        const template = db.getTemplate(guildId, templateName);
-        if (!template) return interaction.reply({ content: `Template \`${templateName}\` not found.`, ephemeral: true });
+      db.saveTemplate(interaction.guildId, name, template);
+      return interaction.reply({
+        content: `Added **${addedRoles.length}** role(s) to random pool of \`${name}\`:\n${addedRoles.map(r => `• ${r}`).join('\n')}`,
+        ephemeral: true
+      });
+    }
 
-        const role = options.getRole('role');
-        if (!template.multiSelectRoles) template.multiSelectRoles = [];
-        if (!template.multiSelectRoles.some(r => r.id === role.id)) {
-          template.multiSelectRoles.push({ id: role.id, name: role.name });
-          db.saveTemplate(guildId, templateName, template);
+    // จัดการ attach_multi_role รองรับสูงสุด 10 ยศ บันทึกเป็น Role ID
+    if (commandName === 'attach_multi_role') {
+      const name = interaction.options.getString('name');
+      const template = db.getTemplate(interaction.guildId, name);
+      if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
+
+      if (!template.multiRoles) template.multiRoles = [];
+
+      const addedRoles = [];
+      for (let i = 1; i <= 10; i++) {
+        const role = interaction.options.getRole(`role${i}`);
+        if (role) {
+          if (!template.multiRoles.includes(role.id)) {
+            template.multiRoles.push(role.id);
+            addedRoles.push(role.name);
+          }
         }
-
-        return interaction.reply({ content: `Added role **${role.name}** to multi-select tab for \`${templateName}\`.`, ephemeral: true });
       }
+
+      db.saveTemplate(interaction.guildId, name, template);
+      return interaction.reply({
+        content: `Added **${addedRoles.length}** role(s) to dropdown options of \`${name}\`:\n${addedRoles.map(r => `• ${r}`).join('\n')}`,
+        ephemeral: true
+      });
     }
   }
 
-  // 2. Control Panel Button Handlers (Modals)
+  // 2. Button Dispatcher
   if (interaction.isButton()) {
     const [action, targetName] = interaction.customId.split(':');
 
-    // Panel: Edit Content (Title & Description)
-    if (action === 'panel_edit_content') {
+    // Builder Panel: Edit Text Content
+    if (action === 'builder_edit_text') {
       const template = db.getTemplate(interaction.guildId, targetName);
       if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
 
       const modal = new ModalBuilder()
         .setCustomId(`modal_save_content:${targetName}`)
-        .setTitle(`Edit Content: ${targetName}`)
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('input_title')
-              .setLabel('Embed Title')
-              .setValue(template.title || '')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('input_description')
-              .setLabel('Embed Description')
-              .setValue(template.description || '')
-              .setStyle(TextInputStyle.Paragraph)
-              .setRequired(true)
-          )
-        );
+        .setTitle(`Edit Content: ${targetName}`);
+
+      const titleInput = new TextInputBuilder()
+        .setCustomId('input_title')
+        .setLabel('Embed Title')
+        .setStyle(TextInputStyle.Short)
+        .setValue(template.title || '')
+        .setRequired(true);
+
+      const descInput = new TextInputBuilder()
+        .setCustomId('input_description')
+        .setLabel('Embed Description')
+        .setStyle(TextInputStyle.Paragraph)
+        .setValue(template.description || '')
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(titleInput),
+        new ActionRowBuilder().addComponents(descInput)
+      );
 
       return interaction.showModal(modal);
     }
 
-    // Panel: Edit Media (Large Image & Small Thumbnail)
-    if (action === 'panel_edit_images') {
+    // Builder Panel: Edit Media URLs
+    if (action === 'builder_edit_media') {
       const template = db.getTemplate(interaction.guildId, targetName);
       if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
 
       const modal = new ModalBuilder()
         .setCustomId(`modal_save_media:${targetName}`)
-        .setTitle(`Set Media: ${targetName}`)
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('input_image')
-              .setLabel('Large Image URL')
-              .setValue(template.image || '')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(false)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('input_thumbnail')
-              .setLabel('Small Thumbnail URL')
-              .setValue(template.thumbnail || '')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(false)
-          )
-        );
+        .setTitle(`Edit Media: ${targetName}`);
+
+      const imgInput = new TextInputBuilder()
+        .setCustomId('input_image')
+        .setLabel('Main Image URL')
+        .setStyle(TextInputStyle.Short)
+        .setValue(template.image || '')
+        .setRequired(false);
+
+      const thumbInput = new TextInputBuilder()
+        .setCustomId('input_thumbnail')
+        .setLabel('Thumbnail Image URL')
+        .setStyle(TextInputStyle.Short)
+        .setValue(template.thumbnail || '')
+        .setRequired(false);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(imgInput),
+        new ActionRowBuilder().addComponents(thumbInput)
+      );
 
       return interaction.showModal(modal);
     }
 
-    // Panel: Publish to Current Channel
-    if (action === 'panel_post_channel') {
+    // Builder Panel: Publish Live
+    if (action === 'builder_publish') {
       const template = db.getTemplate(interaction.guildId, targetName);
       if (!template) return interaction.reply({ content: 'Template not found.', ephemeral: true });
 
-      const finalEmbed = renderTemplateEmbed(template, client.user);
-      const components = buildAttachedComponents(template);
+      const liveEmbed = renderTemplateEmbed(template, client.user);
+      const components = renderTemplateComponents(template, targetName, interaction.guild);
 
-      const published = await interaction.channel.send({
-        embeds: [finalEmbed],
+      await interaction.channel.send({
+        embeds: [liveEmbed],
         components: components
       });
 
-      db.linkActiveEmbed(interaction.guildId, published.id, targetName);
-
-      return interaction.reply({
-        content: `Embed published successfully! ID: \`${published.id}\``,
-        ephemeral: true
-      });
+      return interaction.reply({ content: `✅ Successfully published live message for template \`${targetName}\`!`, ephemeral: true });
     }
 
-    // Interaction: Zira-Style Toggle Role
+    // Live Action: Single Role Toggle
     if (action === 'action_toggle_role') {
-      const roleId = targetName;
-      const role = interaction.guild.roles.cache.get(roleId);
+      const template = db.getTemplate(interaction.guildId, targetName);
+      if (!template || !template.toggleRoleId) {
+        return interaction.reply({ content: 'Role configuration no longer exists.', ephemeral: true });
+      }
+
+      const role = interaction.guild.roles.cache.get(template.toggleRoleId);
       if (!role) return interaction.reply({ content: 'Target role not found.', ephemeral: true });
 
-      const member = interaction.member;
       try {
-        if (member.roles.cache.has(role.id)) {
-          await member.roles.remove(role);
-          return interaction.reply({ content: `Role **${role.name}** removed.`, ephemeral: true });
+        if (interaction.member.roles.cache.has(role.id)) {
+          await interaction.member.roles.remove(role);
+          return interaction.reply({ content: `Removed **${role.name}** from your roles.`, ephemeral: true });
         } else {
-          await member.roles.add(role);
-          return interaction.reply({ content: `Role **${role.name}** granted.`, ephemeral: true });
+          await interaction.member.roles.add(role);
+          return interaction.reply({ content: `Granted **${role.name}** to your roles.`, ephemeral: true });
         }
       } catch (err) {
-        return interaction.reply({ content: 'Bot lacks permission to modify this role.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to update role. Please verify bot permissions and hierarchy.', ephemeral: true });
       }
     }
 
-    // Interaction: Lucky Role Draw (Gacha)
+    // Live Action: Random Role Gacha (สุ่ม Role ID โดยตรง)
     if (action === 'action_random_role') {
       const template = db.getTemplate(interaction.guildId, targetName);
       if (!template || !template.randomPool || template.randomPool.length === 0) {
-        return interaction.reply({ content: 'No roles found in the random pool.', ephemeral: true });
+        return interaction.reply({ content: 'No roles found in this random pool.', ephemeral: true });
       }
 
       const randomRoleId = template.randomPool[Math.floor(Math.random() * template.randomPool.length)];
-      const role = interaction.guild.roles.cache.get(randomRoleId);
-      if (!role) return interaction.reply({ content: 'Selected role does not exist.', ephemeral: true });
+      const targetRole = interaction.guild.roles.cache.get(randomRoleId);
+
+      if (!targetRole) {
+        return interaction.reply({ content: 'Selected role was removed from the server.', ephemeral: true });
+      }
 
       try {
-        await interaction.member.roles.add(role);
-        return interaction.reply({ content: `You rolled and received: **${role.name}**!`, ephemeral: true });
+        await interaction.member.roles.add(targetRole);
+        return interaction.reply({
+          content: `🎉 Congratulations! You rolled and received the **${targetRole.name}** role!`,
+          ephemeral: true
+        });
       } catch (err) {
-        return interaction.reply({ content: 'Bot lacks permission to grant this role.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to assign role. Check bot permissions and role hierarchy.', ephemeral: true });
       }
     }
   }
 
-  // 3. Modal Submissions (Live Preview Updates)
+  // 3. Modal Form Submission Updates
   if (interaction.isModalSubmit()) {
     const [action, targetName] = interaction.customId.split(':');
 
@@ -592,7 +634,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // 4. Multi-Role Long Tab Dropdown Selection
+  // 4. Multi-Role Long Tab Dropdown Selection (Processes by Role ID)
   if (interaction.isStringSelectMenu()) {
     const [action, targetName] = interaction.customId.split(':');
 
@@ -600,8 +642,8 @@ client.on('interactionCreate', async interaction => {
       const selectedRoleIds = interaction.values;
       const member = interaction.member;
 
-      let added = [];
-      let removed = [];
+      const added = [];
+      const removed = [];
 
       try {
         for (const rId of selectedRoleIds) {
